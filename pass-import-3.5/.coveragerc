@@ -1,0 +1,18 @@
+[paths]
+source = pass_import
+
+[run]
+omit =
+    */virtualenv/*
+    */.local/*
+    /usr/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    except ImportError
+    raise ImportError
+    raise NotImplementedError
+    'empty password store.'
+    else:  # python-magic
+    if __name__ == .__main__.:

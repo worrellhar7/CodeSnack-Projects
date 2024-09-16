@@ -1,0 +1,152 @@
+---
+include:
+  - template: Security/SAST.gitlab-ci.yml
+
+stages:
+  - lint
+  - tests
+  - dist
+  - deploy
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+  SAST_DEFAULT_ANALYZERS: bandit
+
+# Dependencies definitions
+# ------------------------
+
+.lpass: &lpass
+  - echo -e '#!/usr/bin/env bash\necho lpass' > /usr/bin/lpass
+  - chmod 755 /usr/bin/lpass
+
+.gnome-keyring: &gnome-keyring
+  - mkdir -p ~/.local/share/keyrings/
+  - cp tests/assets/db/gnome-keyring.keyring ~/.local/share/keyrings/pass-import.keyring
+
+.sphinx: &sphinx
+  - pip3 install --break-system-packages --upgrade pwdsphinx
+  - ln -s /usr/lib/x86_64-linux-gnu/libsodium.so.23 /usr/lib/x86_64-linux-gnu/libequihash.so
+  - ln -s /usr/lib/x86_64-linux-gnu/libsodium.so.23 /usr/lib/x86_64-linux-gnu/libsphinx.so
+  - ldconfig
+  - cp tests/assets/db/sphinx.cfg ~/.sphinxrc
+  - sphinx init
+
+.pip: &pip
+  - pip3 install --break-system-packages --upgrade pip
+  - pip3 install --break-system-packages --upgrade
+    coverage cryptography defusedxml dominate green pyaml jsonpath-ng
+    pykeepass pypandoc python-magic requests secretstorage zxcvbn
+
+.script:
+  script:
+    - *pip
+    - *lpass
+    - *gnome-keyring
+    - make
+    - dbus-run-session -- make tests
+    - make docs
+    - make install
+    - cd ~
+    - pass import --help
+
+.tests:
+  extends: .script
+  stage: tests
+  before_script:
+    - apt-get update -q && apt-get install -y make pass python3-pip grep wget
+      dbus gnome-keyring pandoc libsodium23
+
+.distribution:
+  extends: .script
+  stage: dist
+
+# Jobs definitions
+# ----------------
+
+# Code Linters
+
+shellcheck:
+  stage: lint
+  image: koalaman/shellcheck-alpine
+  script:
+    - shellcheck --shell=bash import.bash
+
+prospector:
+  stage: lint
+  image: python:latest
+  allow_failure: True
+  before_script:
+    - pip install 'prospector[with_everything]' defusedxml requests zxcvbn dominate
+  script:
+    - make lint
+
+sast:
+  stage: lint
+
+# Code tests
+
+python 3.11:
+  image: python:3.11
+  extends: .tests
+  coverage: '/\d+\%\s*$/'
+  artifacts:
+    expire_in: 2 days
+    paths:
+      - htmlcov/
+
+python 3.10:
+  image: python:3.10
+  extends: .tests
+
+python 3.9:
+  image: python:3.9
+  extends: .tests
+
+python 3.8:
+  image: python:3.8
+  extends: .tests
+
+# Distribution tests
+
+archlinux:
+  image: archlinux
+  extends: .distribution
+  before_script:
+    - pacman -Syu --noconfirm --noprogressbar which grep make python-pip pass
+      dbus gnome-keyring file pandoc python-setuptools
+
+ubuntu:
+  image: ubuntu:24.04
+  extends: .distribution
+  before_script:
+    - apt-get update -q && apt-get install -y make gpg pass python3-pip grep wget
+      dbus gnome-keyring pandoc
+
+debian:
+  image: debian
+  extends: .distribution
+  before_script:
+    - apt-get update -q && apt-get install -y make gpg pass python3-pip grep wget
+      dbus gnome-keyring pandoc
+
+.fedora:
+  image: fedora
+  extends: .distribution
+  before_script:
+    - dnf -y install make gpg pass python-setuptools python3-pip grep which dbus
+      dbus-daemon gnome-keyring pandoc --setopt=install_weak_deps=False
+
+# Code coverage deployment
+
+pages:
+  stage: deploy
+  dependencies:
+    - python 3.11
+  script:
+    - mv htmlcov/ public/
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_REF_NAME == $CI_DEFAULT_BRANCH
